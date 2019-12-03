@@ -12,9 +12,9 @@ jwt = JWTManager(app)
 engine = db.create_engine(schedulr_config.Config.DATABASE_URI)
 connection = engine.connect()
 metadata = db.MetaData()
-classes = db.Table('classes', metadata, autoload=True, autoload_with=engine)
-class_reqs = db.Table('class_reqs', metadata, autoload=True, autoload_with=engine)
-classes_taken = db.Table('classes_taken', metadata, autoload=True, autoload_with=engine)
+courses = db.Table('courses', metadata, autoload=True, autoload_with=engine)
+course_reqs = db.Table('course_reqs', metadata, autoload=True, autoload_with=engine)
+courses_taken = db.Table('courses_taken', metadata, autoload=True, autoload_with=engine)
 programs = db.Table('programs', metadata, autoload=True, autoload_with=engine)
 prog_reqs = db.Table('prog_reqs', metadata, autoload=True, autoload_with=engine)
 reqsets = db.Table('reqsets', metadata, autoload=True, autoload_with=engine)
@@ -22,7 +22,66 @@ requirements = db.Table('requirements', metadata, autoload=True, autoload_with=e
 users = db.Table('users', metadata, autoload=True, autoload_with=engine)
 user_reqs = db.Table('user_reqs', metadata, autoload=True, autoload_with=engine)
 
-@app.route("/auth", methods=['POST'])
+@app.route("/list_courses", methods=['GET'])
+def list_courses():
+	sel = db.select([courses])
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+	res.close()
+
+	return {
+		"error": "success",
+		"courses": [(dict(row.items())) for row in db_out]
+	}, 200
+
+@app.route("/list_programs", methods=['GET'])
+def list_programs():
+	sel = db.select([programs])
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+	res.close()
+
+	return {
+		"error": "success",
+		"programs": [(dict(row.items())) for row in db_out]
+	}, 200
+
+@app.route("/get_course", methods=['GET'])
+def get_course():
+	cid = request.args.get('course_id')
+	if not cid:
+		return { "error": "no course_id" }, 400
+
+	sel = db.select([courses]).where(courses.c.course_id == cid)
+	res = connection.execute(sel)
+	db_out = res.first()
+	res.close()
+
+	if not db_out:
+		return { "error": "invalid course" }, 400
+
+	return {
+		"error": "success",
+		"course": dict(db_out.items())
+	}, 200
+
+@app.route("/get_prereqs", methods=['GET'])
+def get_prereqs():
+	cid = request.args.get('course_id')
+	if not cid:
+		return { "error": "no course_id" }, 400
+
+	sel = db.select([courses]).select_from(courses.join(course_reqs, courses.c.course_id == course_reqs.c.prereq_id)).where(course_reqs.c.course_id == cid)
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+	res.close()
+
+	return {
+		"error": "success",
+		"course": [(dict(row.items())) for row in db_out]
+	}, 200
+
+@app.route("/auth", methods=['GET'])
 @jwt_required
 def auth():
 	return {
@@ -33,7 +92,7 @@ def auth():
 @app.route("/login", methods=['POST'])
 def login():
 	if not request.is_json:
-		return { "error": "Invalid JSON request!" }, 400
+		return { "error": "invalid JSON" }, 400
 
 	email = request.json.get('email')
 	password = request.json.get('password')
@@ -43,7 +102,7 @@ def login():
 	if not password:
 		return { "error": "no password" }, 400
 
-	query = db.select([users]).where(users.columns.email == email)
+	query = db.select([users]).where(users.c.email == email)
 	ResultProxy = connection.execute(query)
 	result = ResultProxy.first()
 	if not result or not bcrypt.checkpw(password.encode('utf-8'), result['password'].encode('utf-8')):
@@ -59,7 +118,7 @@ def login():
 @app.route("/signup", methods=['POST'])
 def signup():
 	if not request.is_json:
-		return { "error": "Invalid JSON request!" }, 400
+		return { "error": "invalid JSON" }, 400
 
 	email = request.json.get('email')
 	password = request.json.get('password')
@@ -78,7 +137,7 @@ def signup():
 	except EmailNotValidError as e:
 		return { "error": "invalid email" }, 400
 
-	query = db.select([users]).where(users.columns.email == email)
+	query = db.select([users]).where(users.c.email == email)
 	ResultProxy = connection.execute(query)
 	result = ResultProxy.first()
 	if result:
