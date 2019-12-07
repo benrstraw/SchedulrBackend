@@ -1,5 +1,5 @@
 import schedulr_config
-from flask import Flask, request, abort, session
+from flask import Flask, request, abort, session, jsonify
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 import sqlalchemy as db
 import json
@@ -28,11 +28,7 @@ def list_courses():
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	res.close()
-
-	return {
-		"error": "success",
-		"courses": [(dict(row.items())) for row in db_out]
-	}, 200
+	return jsonify([(dict(row.items())) for row in db_out]), 200
 
 @app.route("/list_programs", methods=['GET'])
 def list_programs():
@@ -40,11 +36,7 @@ def list_programs():
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	res.close()
-
-	return {
-		"error": "success",
-		"programs": [(dict(row.items())) for row in db_out]
-	}, 200
+	return jsonify([(dict(row.items())) for row in db_out]), 200
 
 @app.route("/get_course", methods=['GET'])
 def get_course():
@@ -55,37 +47,67 @@ def get_course():
 	sel = db.select([courses]).where(courses.c.course_id == cid)
 	res = connection.execute(sel)
 	db_out = res.first()
-	res.close()
 
 	if not db_out:
-		return { "error": "invalid course" }, 400
+		return { "error": "invalid course" }, 404
 
-	return {
-		"error": "success",
-		"course": dict(db_out.items())
-	}, 200
-
-@app.route("/get_prereqs", methods=['GET'])
-def get_prereqs():
-	cid = request.args.get('course_id')
-	if not cid:
-		return { "error": "no course_id" }, 400
+	course_info = dict(db_out.items())
 
 	sel = db.select([courses]).select_from(courses.join(course_reqs, courses.c.course_id == course_reqs.c.prereq_id)).where(course_reqs.c.course_id == cid)
 	res = connection.execute(sel)
 	db_out = res.fetchall()
+
+	course_info['prereqs'] = [(dict(row.items())) for row in db_out]
+
 	res.close()
 
+	return course_info, 200
+
+@app.route("/list_taken", methods=['GET', 'POST'])
+@jwt_required
+def list_taken():
+	uid = get_jwt_identity()
+	sel = db.select([courses_taken]).where(courses_taken.c.user_id == uid)
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+
+	takens = [(dict(row.items())) for row in db_out]
+
+	for t in takens:
+		sel = db.select([courses]).where(courses.c.course_id == t['course_id'])
+		res = connection.execute(sel)
+		db_out = res.first()
+		t['course'] = dict(db_out.items())
+
+	res.close()
+	return jsonify([(dict(row.items())) for row in db_out]), 200
+
+@app.route("/add_taken", methods=['POST'])
+@jwt_required
+def add_taken():
+	if not request.is_json:
+		return { "error": "invalid JSON" }, 400
+
+	cid = request.json.get('course_id')
+	grade = request.json.get('grade')
+	status = request.json.get('status')
+
+	if not cid:
+		return { "error": "no email" }, 400
+	if not status:
+		return { "error": "no name" }, 400
+
+	query = courses_taken.insert().values(user_id=get_jwt_identity(), course_id=cid, grade=grade, status=status)
+	ResultProxy = connection.execute(query)
+
 	return {
-		"error": "success",
-		"course": [(dict(row.items())) for row in db_out]
+		"taken_id": ResultProxy.inserted_primary_key[0]
 	}, 200
 
 @app.route("/auth", methods=['GET'])
 @jwt_required
 def auth():
 	return {
-		"error": "success",
 		"user_id": get_jwt_identity()
 	}, 200
 
@@ -111,9 +133,8 @@ def login():
 	access_token = create_access_token(identity=result['user_id'])
 
 	return {
-		"error": "success",
 		"access_token": access_token
-	}
+	}, 200
 
 @app.route("/signup", methods=['POST'])
 def signup():
@@ -153,8 +174,7 @@ def signup():
 	access_token = create_access_token(identity=user_id)
 
 	return {
-		"error": "success",
 		"access_token": access_token
-	}
+	}, 200
 
 app.run()
