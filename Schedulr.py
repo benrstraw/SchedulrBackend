@@ -80,7 +80,7 @@ def list_taken():
 		t['course'] = dict(db_out.items())
 
 	res.close()
-	return jsonify([(dict(row.items())) for row in db_out]), 200
+	return jsonify(takens), 200
 
 @app.route("/add_taken", methods=['POST'])
 @jwt_required
