@@ -23,8 +23,9 @@ users = db.Table('users', metadata, autoload=True, autoload_with=engine)
 user_reqs = db.Table('user_reqs', metadata, autoload=True, autoload_with=engine)
 user_taken = db.Table('user_taken', metadata, autoload=True, autoload_with=engine)
 
-_catalog = '2019-20'
-_semester = 'F2019'
+semesters = ['FALL', 'SPRING', 'SUMMER']
+statuses = ['COMPLETE', 'INPROGRESS', 'PLANNED']
+passing = ['C', 'C+', 'B-', 'B', 'B+', 'A-', 'A', 'A+']
 
 @app.route("/list_courses", methods=['GET'])
 def list_courses():
@@ -102,8 +103,7 @@ def get_reqset():
 @app.route("/my_taken", methods=['GET', 'POST'])
 @jwt_required
 def my_taken():
-	uid = get_jwt_identity()
-	sel = db.select([courses.c.course_id, courses.c.code, courses.c.name, courses.c.catalog, user_taken.c.grade, user_taken.c.status]).select_from(courses.join(user_taken, courses.c.course_id == user_taken.c.course_id)).where(user_taken.c.user_id == uid)
+	sel = db.select([courses, user_taken.c.semester, user_taken.c.year, user_taken.c.grade, user_taken.c.status]).select_from(courses.join(user_taken, courses.c.course_id == user_taken.c.course_id)).where(user_taken.c.user_id == get_jwt_identity())
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	res.close()
@@ -113,8 +113,7 @@ def my_taken():
 @app.route("/my_reqsets", methods=['GET', 'POST'])
 @jwt_required
 def my_reqsets():
-	uid = get_jwt_identity()
-	sel = db.select([reqsets]).select_from(reqsets.join(user_reqs, reqsets.c.rs_id == user_reqs.c.rs_id)).where(user_reqs.c.user_id == uid)
+	sel = db.select([reqsets]).select_from(reqsets.join(user_reqs, reqsets.c.rs_id == user_reqs.c.rs_id)).where(user_reqs.c.user_id == get_jwt_identity())
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 
@@ -137,15 +136,26 @@ def add_taken():
 		return { "error": "invalid JSON" }, 400
 
 	cid = request.json.get('course_id')
+	semester = request.json.get('semester').upper()
+	year = request.json.get('year')
 	grade = request.json.get('grade')
-	status = request.json.get('status')
+	status = request.json.get('status').upper()
 
 	if not cid:
 		return { "error": "no course_id" }, 400
+	if not semester:
+		return { "error": "no semester" }, 400
+	if not year:
+		return { "error": "no year" }, 400
 	if not status:
 		return { "error": "no status" }, 400
 
-	query = insert(user_taken).values(user_id=get_jwt_identity(), course_id=cid, grade=grade, status=status).on_duplicate_key_update(grade=grade, status=status)
+	if semester not in semesters:
+		return { "error": "invalid semester (must be in ['FALL', 'SPRING', 'SUMMER'])" }, 400
+	if status not in statuses:
+		return { "error": "invalid semester (must be in ['COMPLETE', 'INPROGRESS', 'PLANNED'])" }, 400
+
+	query = insert(user_taken).values(user_id=get_jwt_identity(), course_id=cid, semester=semester, year=year, grade=grade, status=status).on_duplicate_key_update(grade=grade, status=status)
 	ResultProxy = connection.execute(query)
 
 	return {}, 200
@@ -157,7 +167,6 @@ def add_program():
 		return { "error": "invalid JSON" }, 400
 
 	pid = request.json.get('prog_id')
-
 	if not pid:
 		return { "error": "no prog_id" }, 400
 
@@ -179,11 +188,10 @@ def add_reqset():
 		return { "error": "invalid JSON" }, 400
 
 	rsid = request.json.get('rs_id')
-
 	if not rsid:
 		return { "error": "no rs_id" }, 400
 
-	query = user_reqs.insert().values(user_id=get_jwt_identity(), rs_id=rs['rs_id']).prefix_with('IGNORE')
+	query = user_reqs.insert().values(user_id=get_jwt_identity(), rs_id=rsid).prefix_with('IGNORE')
 	res = connection.execute(query)
 
 	return {}, 200
@@ -195,11 +203,20 @@ def drop_taken():
 		return { "error": "invalid JSON" }, 400
 
 	cid = request.json.get('course_id')
+	semester = request.json.get('semester').upper()
+	year = request.json.get('year')
 
 	if not cid:
 		return { "error": "no course_id" }, 400
+	if not semester:
+		return { "error": "no semester" }, 400
+	if not year:
+		return { "error": "no year" }, 400
 
-	sel = user_taken.delete().where(db.and_(user_taken.c.user_id == get_jwt_identity(), user_taken.c.course_id == cid))
+	if semester not in semesters:
+		return { "error": "invalid semester (must be in ['FALL', 'SPRING', 'SUMMER'])" }, 400
+
+	sel = user_taken.delete().where(db.and_(user_taken.c.user_id == get_jwt_identity(), user_taken.c.course_id == cid, user_taken.c.semester == semester, user_taken.c.year == year))
 	res = connection.execute(sel)
 
 	return {}, 200
@@ -211,7 +228,6 @@ def drop_reqset():
 		return { "error": "invalid JSON" }, 400
 
 	rsid = request.json.get('rs_id')
-
 	if not rsid:
 		return { "error": "no rs_id" }, 400
 
