@@ -2,6 +2,7 @@ import schedulr_config
 from flask import Flask, request, abort, session, jsonify
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 import sqlalchemy as db
+from sqlalchemy.dialects.mysql import insert
 import json
 import bcrypt
 from email_validator import validate_email, EmailNotValidError
@@ -14,13 +15,16 @@ connection = engine.connect()
 metadata = db.MetaData()
 courses = db.Table('courses', metadata, autoload=True, autoload_with=engine)
 course_reqs = db.Table('course_reqs', metadata, autoload=True, autoload_with=engine)
-courses_taken = db.Table('courses_taken', metadata, autoload=True, autoload_with=engine)
 programs = db.Table('programs', metadata, autoload=True, autoload_with=engine)
 prog_reqs = db.Table('prog_reqs', metadata, autoload=True, autoload_with=engine)
 reqsets = db.Table('reqsets', metadata, autoload=True, autoload_with=engine)
-requirements = db.Table('requirements', metadata, autoload=True, autoload_with=engine)
+rs_reqs = db.Table('rs_reqs', metadata, autoload=True, autoload_with=engine)
 users = db.Table('users', metadata, autoload=True, autoload_with=engine)
 user_reqs = db.Table('user_reqs', metadata, autoload=True, autoload_with=engine)
+user_taken = db.Table('user_taken', metadata, autoload=True, autoload_with=engine)
+
+_catalog = '2019-20'
+_semester = 'F2019'
 
 @app.route("/list_courses", methods=['GET'])
 def list_courses():
@@ -33,6 +37,14 @@ def list_courses():
 @app.route("/list_programs", methods=['GET'])
 def list_programs():
 	sel = db.select([programs])
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+	res.close()
+	return jsonify([(dict(row.items())) for row in db_out]), 200
+
+@app.route("/list_reqsets", methods=['GET'])
+def list_reqsets():
+	sel = db.select([reqsets])
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	res.close()
@@ -63,24 +75,60 @@ def get_course():
 
 	return course_info, 200
 
-@app.route("/list_taken", methods=['GET', 'POST'])
+@app.route("/get_reqset", methods=['GET'])
+def get_reqset():
+	rsid = request.args.get('rs_id')
+	if not rsid:
+		return { "error": "no rs_id" }, 400
+
+	sel = db.select([reqsets]).where(reqsets.c.rs_id == rsid)
+	res = connection.execute(sel)
+	db_out = res.first()
+
+	if not db_out:
+		return { "error": "invalid reqset" }, 404
+
+	reqset = dict(db_out.items())
+
+	sel = db.select([courses]).select_from(courses.join(rs_reqs, courses.c.course_id == rs_reqs.c.course_id)).where(rs_reqs.c.rs_id == reqset['rs_id'])
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+	reqset['courses'] = [(dict(row.items())) for row in db_out]
+
+	res.close()
+
+	return reqset, 200
+
+@app.route("/my_taken", methods=['GET', 'POST'])
 @jwt_required
-def list_taken():
+def my_taken():
 	uid = get_jwt_identity()
-	sel = db.select([courses_taken]).where(courses_taken.c.user_id == uid)
+	sel = db.select([courses.c.course_id, courses.c.code, courses.c.name, courses.c.catalog, user_taken.c.grade, user_taken.c.status]).select_from(courses.join(user_taken, courses.c.course_id == user_taken.c.course_id)).where(user_taken.c.user_id == uid)
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+	res.close()
+
+	return jsonify([(dict(row.items())) for row in db_out]), 200
+
+@app.route("/my_reqsets", methods=['GET', 'POST'])
+@jwt_required
+def my_reqsets():
+	uid = get_jwt_identity()
+	sel = db.select([reqsets]).select_from(reqsets.join(user_reqs, reqsets.c.rs_id == user_reqs.c.rs_id)).where(user_reqs.c.user_id == uid)
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 
-	takens = [(dict(row.items())) for row in db_out]
+	userreqsets = [(dict(row.items())) for row in db_out]
 
-	for t in takens:
-		sel = db.select([courses]).where(courses.c.course_id == t['course_id'])
-		res = connection.execute(sel)
-		db_out = res.first()
-		t['course'] = dict(db_out.items())
+	# for u in userreqsets:
+	# 	sel = db.select([courses]).select_from(courses.join(rs_reqs, courses.c.course_id == rs_reqs.c.course_id)).where(rs_reqs.c.rs_id == u['rs_id'])
+	# 	res = connection.execute(sel)
+	# 	db_out = res.fetchall()
+	# 	u['courses'] = [(dict(row.items())) for row in db_out]
 
 	res.close()
-	return jsonify(takens), 200
+
+	return jsonify(userreqsets), 200
 
 @app.route("/add_taken", methods=['POST'])
 @jwt_required
@@ -93,23 +141,84 @@ def add_taken():
 	status = request.json.get('status')
 
 	if not cid:
-		return { "error": "no email" }, 400
+		return { "error": "no course_id" }, 400
 	if not status:
-		return { "error": "no name" }, 400
+		return { "error": "no status" }, 400
 
-	query = courses_taken.insert().values(user_id=get_jwt_identity(), course_id=cid, grade=grade, status=status)
+	query = insert(user_taken).values(user_id=get_jwt_identity(), course_id=cid, grade=grade, status=status).on_duplicate_key_update(grade=grade, status=status)
 	ResultProxy = connection.execute(query)
 
-	return {
-		"taken_id": ResultProxy.inserted_primary_key[0]
-	}, 200
+	return {}, 200
 
-@app.route("/auth", methods=['GET'])
+@app.route("/add_program", methods=['POST'])
 @jwt_required
-def auth():
-	return {
-		"user_id": get_jwt_identity()
-	}, 200
+def add_program():
+	if not request.is_json:
+		return { "error": "invalid JSON" }, 400
+
+	pid = request.json.get('prog_id')
+
+	if not pid:
+		return { "error": "no prog_id" }, 400
+
+	sel = db.select([prog_reqs]).where(prog_reqs.c.prog_id == pid)
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+
+	rids = [(dict(row.items())) for row in db_out]
+	for rs in rids:
+		query = user_reqs.insert().values(user_id=get_jwt_identity(), rs_id=rs['rs_id']).prefix_with('IGNORE')
+		ResultProxy = connection.execute(query)
+
+	return {}, 200
+
+@app.route("/add_reqset", methods=['POST'])
+@jwt_required
+def add_reqset():
+	if not request.is_json:
+		return { "error": "invalid JSON" }, 400
+
+	rsid = request.json.get('rs_id')
+
+	if not rsid:
+		return { "error": "no rs_id" }, 400
+
+	query = user_reqs.insert().values(user_id=get_jwt_identity(), rs_id=rs['rs_id']).prefix_with('IGNORE')
+	res = connection.execute(query)
+
+	return {}, 200
+
+@app.route("/drop_taken", methods=['POST'])
+@jwt_required
+def drop_taken():
+	if not request.is_json:
+		return { "error": "invalid JSON" }, 400
+
+	cid = request.json.get('course_id')
+
+	if not cid:
+		return { "error": "no course_id" }, 400
+
+	sel = user_taken.delete().where(db.and_(user_taken.c.user_id == get_jwt_identity(), user_taken.c.course_id == cid))
+	res = connection.execute(sel)
+
+	return {}, 200
+
+@app.route("/drop_reqset", methods=['POST'])
+@jwt_required
+def drop_reqset():
+	if not request.is_json:
+		return { "error": "invalid JSON" }, 400
+
+	rsid = request.json.get('rs_id')
+
+	if not rsid:
+		return { "error": "no rs_id" }, 400
+
+	sel = user_reqs.delete().where(db.and_(user_reqs.c.user_id == get_jwt_identity(), user_reqs.c.rs_id == rsid))
+	res = connection.execute(sel)
+
+	return {}, 200
 
 @app.route("/login", methods=['POST'])
 def login():
