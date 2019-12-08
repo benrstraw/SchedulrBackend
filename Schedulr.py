@@ -271,7 +271,9 @@ def add_taken():
 	query = insert(user_taken).values(user_id=get_jwt_identity(), course_id=cid, semester=semester, year=year, grade=grade, status=status).on_duplicate_key_update(grade=grade, status=status)
 	ResultProxy = connection.execute(query)
 
-	return {}, 200
+	return {
+		"success": True
+	}, 200
 
 @app.route("/add_program", methods=['POST'])
 @jwt_required
@@ -292,7 +294,9 @@ def add_program():
 		query = user_reqs.insert().values(user_id=get_jwt_identity(), rs_id=rs['rs_id']).prefix_with('IGNORE')
 		ResultProxy = connection.execute(query)
 
-	return {}, 200
+	return {
+		"success": True
+	}, 200
 
 @app.route("/add_reqset", methods=['POST'])
 @jwt_required
@@ -307,7 +311,9 @@ def add_reqset():
 	query = user_reqs.insert().values(user_id=get_jwt_identity(), rs_id=rsid).prefix_with('IGNORE')
 	res = connection.execute(query)
 
-	return {}, 200
+	return {
+		"success": True
+	}, 200
 
 @app.route("/drop_taken", methods=['POST'])
 @jwt_required
@@ -332,7 +338,9 @@ def drop_taken():
 	sel = user_taken.delete().where(db.and_(user_taken.c.user_id == get_jwt_identity(), user_taken.c.course_id == cid, user_taken.c.semester == semester, user_taken.c.year == year))
 	res = connection.execute(sel)
 
-	return {}, 200
+	return {
+		"success": True
+	}, 200
 
 @app.route("/drop_reqset", methods=['POST'])
 @jwt_required
@@ -347,7 +355,9 @@ def drop_reqset():
 	sel = user_reqs.delete().where(db.and_(user_reqs.c.user_id == get_jwt_identity(), user_reqs.c.rs_id == rsid))
 	res = connection.execute(sel)
 
-	return {}, 200
+	return {
+		"success": True
+	}, 200
 
 @app.route("/login", methods=['POST'])
 def login():
