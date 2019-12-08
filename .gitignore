@@ -1,0 +1,6 @@
+/*
+!.gitignore
+!Schedulr.py
+!toposort.py
+!dump-schedulr-catalog.sql
+!dump-schedulr-structure.sql
