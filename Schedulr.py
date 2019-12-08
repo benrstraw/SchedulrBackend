@@ -28,11 +28,12 @@ semesters = ['FALL', 'SPRING', 'SUMMER']
 statuses = ['COMPLETE', 'INPROGRESS', 'PLANNED']
 passing = ['C', 'C+', 'B-', 'B', 'B+', 'A-', 'A', 'A+']
 
-def get_nested_prereqs(cid, dep_graph):
+def get_nested_prereqs(cid, dep_graph, userpass):
 	# Very important: many classes share the same prereqs, so we go down the same call tree multiple times.
 	# Solution: if the course is also in the graph, skip it. This skips not only the course call, but also the call for all it's prereqs.
 	# This is fine because if the course has already been called once, we've already processed all it's prereqs as well.
-	if cid in dep_graph:
+	# ALSO, we do not want to add classes that have already been passed, this will create incorrect semester plans.
+	if cid in dep_graph or cid in userpass:
 		return
 
 	# Retrieve from the DB the list of course IDs for the *prerequisites* for the input course ID.
@@ -41,13 +42,14 @@ def get_nested_prereqs(cid, dep_graph):
 	db_out = res.fetchall()
 
 	# For the input course ID key in the dep_graph dictionary, add the set of prerequisite course IDs as the value.
-	dep_graph[cid] = {row['course_id'] for row in db_out}
+	# If the class has already been passsed, it's no longer a required prerequisite and is dropped.
+	dep_graph[cid] = {row['course_id'] for row in db_out if row['course_id'] not in userpass}
 
 	# Since the new prerequisites we just discovered may each have their own prereqs, recursively run the call for all the courses we just added.
 	for rec in dep_graph[cid]:
-		get_nested_prereqs(rec, dep_graph)
+		get_nested_prereqs(rec, dep_graph, userpass)
 
-def build_deps_graph(uid):
+def build_deps_graph(uid, ignore_passed = False):
 	# Get IDs for all of the reqsets the user has added.
 	sel = db.select([reqsets.c.rs_id]).select_from(reqsets.join(user_reqs, reqsets.c.rs_id == user_reqs.c.rs_id)).where(user_reqs.c.user_id == get_jwt_identity())
 	res = connection.execute(sel)
@@ -60,20 +62,29 @@ def build_deps_graph(uid):
 	db_out = res.fetchall()
 	needed_courses = list(dict.fromkeys([row['course_id'] for row in db_out]))
 
-	# Retrieve all of the required courses from the DB given the list of required course IDs.
-	sel = db.select([courses]).where(courses.c.course_id.in_(needed_courses))
+	# Retrieve the course IDs, grades, and statuses for all the courses the user has taken.
+	sel = db.select([courses.c.course_id, user_taken.c.grade, user_taken.c.status]).select_from(courses.join(user_taken, courses.c.course_id == user_taken.c.course_id)).where(user_taken.c.user_id == uid)
 	res = connection.execute(sel)
-	db_out = res.fetchall()	
-	needed_courses = [(dict(row.items())) for row in db_out]
+	db_out = res.fetchall()
 
 	res.close() # Close the DB connection, we're done with it!
+
+	# Compare the taken courses against the pass requirements, and remove passed course IDs from the list of required course IDs.
+	usertake = [(dict(row.items())) for row in db_out]
+	userpass = []
+	for t in usertake:
+		if t['status'] == 'COMPLETE' and t['grade'] in passing:
+			userpass += [t['course_id']]
 
 	# Create an empty dictionary to hold the dependency graph.
 	dep_graph = dict()
 
 	# For each of the courses in the reqset, call the recursive function to find it's prereqs all the way to the bottom.
 	for nc in needed_courses:
-		get_nested_prereqs(nc['course_id'], dep_graph)
+		if ignore_passed:
+			get_nested_prereqs(nc, dep_graph, [])
+		else:
+			get_nested_prereqs(nc, dep_graph, userpass)
 
 	return dep_graph
 
@@ -223,7 +234,7 @@ def my_needed():
 def gen_schedule():
 	max_classes = 4
 
-	if request.is_json:
+	if request.is_json and 'max_classes' in request.json:
 		max_classes = request.json.get('max_classes')
 
 	dep_graph = build_deps_graph(get_jwt_identity())
