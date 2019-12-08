@@ -415,4 +415,5 @@ def signup():
 		"access_token": access_token
 	}, 200
 
-app.run()
+if __name__ == '__main__':
+	app.run()
