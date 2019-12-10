@@ -433,9 +433,12 @@ def drop_taken():
 
 	sel = user_taken.delete().where(db.and_(user_taken.c.user_id == get_jwt_identity(), user_taken.c.course_id == cid, user_taken.c.semester == semester, user_taken.c.year == year))
 	res = connection.execute(sel)
+	num_deleted = res.rowcount
+	res.close()
 
 	return {
-		"success": True
+		"success": True,
+		"deleted": num_deleted
 	}, 200
 
 #####
@@ -452,9 +455,12 @@ def drop_reqset():
 
 	sel = user_progs.delete().where(db.and_(user_progs.c.user_id == get_jwt_identity(), user_progs.c.prog_id == progid))
 	res = connection.execute(sel)
+	num_deleted = res.rowcount
+	res.close()
 
 	return {
-		"success": True
+		"success": True,
+		"deleted": num_deleted
 	}, 200
 
 #####
