@@ -321,6 +321,8 @@ def gen_schedule():
 
 	# If the user provided a JSON request and it contains a max_classes key, overwrite out default value.
 	if request.is_json and 'max_classes' in request.json:
+		if isinstance(request.json.get('max_classes'), int):
+			pass
 		max_classes = request.json.get('max_classes')
 
 	# Build a dependency graph of all the courses the user must still take.
