@@ -235,6 +235,22 @@ def my_reqsets():
 	return jsonify(userreqsets), 200
 
 #####
+# Route which returns information about all of the requirements sets a user has added to their account.
+@app.route("/my_programs", methods=['GET', 'POST'])
+@jwt_required
+def my_programs():
+
+	sel = db.select([programs]).select_from(programs.join(user_progs, programs.c.prog_id == user_progs.c.prog_id)).where(user_progs.c.user_id == get_jwt_identity())
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+
+	userprogs = [(dict(row.items())) for row in db_out]
+
+	res.close()
+
+	return jsonify(userprogs), 200
+
+#####
 # Retrieve a list of all the courses the user must still pass to complete their requirements sets.
 @app.route("/my_needed", methods=['GET', 'POST'])
 @jwt_required
