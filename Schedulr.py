@@ -28,11 +28,11 @@ user_taken = db.Table('user_taken', metadata, autoload=True, autoload_with=engin
 # Valid semesters and statuses for course attempts.
 semesters = ['FALL', 'SPRING', 'SUMMER']
 statuses = ['COMPLETE', 'INPROGRESS', 'PLANNED']
-grades = ['A', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F']
+grades = ['A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F']
 PASS_THRESHOLD = 7 # the MySQL enum value for 'C' is 7
 
 # The course grades which are considered passing.
-passing = ['C', 'C+', 'B-', 'B', 'B+', 'A-', 'A', 'A+']
+passing = ['C', 'C+', 'B-', 'B', 'B+', 'A-', 'A']
 
 #####
 # This function returns a directed dependency graph of all the courses the user must take to complete their requirements
