@@ -364,7 +364,7 @@ def add_program():
 	if not pid:
 		return { "error": "no prog_id" }, 400
 
-	query = user_progs.insert().values(user_id=get_jwt_identity(), proj_id=rs['proj_id']).prefix_with('IGNORE')
+	query = user_progs.insert().values(user_id=get_jwt_identity(), prog_id=pid).prefix_with('IGNORE')
 	res = connection.execute(query)
 
 	return {
