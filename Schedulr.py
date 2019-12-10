@@ -62,7 +62,7 @@ def get_nested_prereqs(cid, dep_graph, userpass):
 # and optionally a boolean stating whether we should ignore the user's passed courses and build the entire program.
 def build_deps_graph(uid, ignore_passed = False):
 	# Get IDs for all of the reqsets the user has added.
-	sel = db.select([reqsets.c.rs_id]).select_from(reqsets.join(proj_reqs.join(user_progs, prog_reqs.prog_id == user_progs.prog_id), reqsets.c.rs_id == proj_reqs.c.rs_id)).where(user_projs.c.user_id == get_jwt_identity())
+	sel = db.select([reqsets.c.rs_id]).select_from(reqsets.join(prog_reqs.join(user_progs, prog_reqs.c.prog_id == user_progs.c.prog_id), reqsets.c.rs_id == prog_reqs.c.rs_id)).where(user_progs.c.user_id == get_jwt_identity())
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	rsids = [row['rs_id'] for row in db_out]
@@ -222,7 +222,7 @@ def my_taken():
 @jwt_required
 def my_reqsets():
 	# SELECT r.* FROM schedulr.reqsets r JOIN schedulr.prog_reqs pr ON r.rs_id = pr.rs_id JOIN schedulr.user_progs up ON up.prog_id = pr.prog_id WHERE up.user_id = {uid}
-	sel = db.select([reqsets]).select_from(reqsets.join(proj_reqs.join(user_progs, prog_reqs.prog_id == user_progs.prog_id), reqsets.c.rs_id == proj_reqs.c.rs_id)).where(user_projs.c.user_id == get_jwt_identity())
+	sel = db.select([reqsets]).select_from(reqsets.join(prog_reqs.join(user_progs, prog_reqs.c.prog_id == user_progs.c.prog_id), reqsets.c.rs_id == prog_reqs.c.rs_id)).where(user_progs.c.user_id == get_jwt_identity())
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 
@@ -264,13 +264,13 @@ def my_programs():
 @jwt_required
 def my_needed():
 	# Get IDs for all of the reqsets the user has added.
-	sel = db.select([reqsets.c.rs_id]).select_from(reqsets.join(proj_reqs.join(user_progs, prog_reqs.prog_id == user_progs.prog_id), reqsets.c.rs_id == proj_reqs.c.rs_id)).where(user_projs.c.user_id == get_jwt_identity())
+	sel = db.select([reqsets]).select_from(reqsets.join(prog_reqs.join(user_progs, prog_reqs.c.prog_id == user_progs.c.prog_id), reqsets.c.rs_id == prog_reqs.c.rs_id)).where(user_progs.c.user_id == get_jwt_identity())
 	res = connection.execute(sel)
 	db_out = res.fetchall()
-	rsids = [row['rs_id'] for row in db_out]
+	rss = [dict(row.items()) for row in db_out]
 
 	# Retrieve the course IDs for all of the reqset requirements for the reqsets acquired in the previous step.
-	sel = db.select([courses.c.course_id]).select_from(courses.join(rs_reqs, courses.c.course_id == rs_reqs.c.course_id)).where(rs_reqs.c.rs_id.in_(rsids))
+	sel = db.select([courses.c.course_id]).select_from(courses.join(rs_reqs, courses.c.course_id == rs_reqs.c.course_id)).where(rs_reqs.c.rs_id.in_([rs['rs_id'] for rs in rss]))
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	needed_courses = list(dict.fromkeys([row['course_id'] for row in db_out]))
