@@ -21,7 +21,7 @@ prog_reqs = db.Table('prog_reqs', metadata, autoload=True, autoload_with=engine)
 reqsets = db.Table('reqsets', metadata, autoload=True, autoload_with=engine)
 rs_reqs = db.Table('rs_reqs', metadata, autoload=True, autoload_with=engine)
 users = db.Table('users', metadata, autoload=True, autoload_with=engine)
-user_reqs = db.Table('user_reqs', metadata, autoload=True, autoload_with=engine)
+user_progs = db.Table('user_progs', metadata, autoload=True, autoload_with=engine)
 user_taken = db.Table('user_taken', metadata, autoload=True, autoload_with=engine)
 
 # Valid semesters and statuses for course attempts.
@@ -62,7 +62,7 @@ def get_nested_prereqs(cid, dep_graph, userpass):
 # and optionally a boolean stating whether we should ignore the user's passed courses and build the entire program.
 def build_deps_graph(uid, ignore_passed = False):
 	# Get IDs for all of the reqsets the user has added.
-	sel = db.select([reqsets.c.rs_id]).select_from(reqsets.join(user_reqs, reqsets.c.rs_id == user_reqs.c.rs_id)).where(user_reqs.c.user_id == get_jwt_identity())
+	sel = db.select([reqsets.c.rs_id]).select_from(reqsets.join(proj_reqs.join(user_progs, prog_reqs.prog_id == user_progs.prog_id), reqsets.c.rs_id == proj_reqs.c.rs_id)).where(user_projs.c.user_id == get_jwt_identity())
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	rsids = [row['rs_id'] for row in db_out]
@@ -213,8 +213,8 @@ def my_taken():
 @app.route("/my_reqsets", methods=['GET', 'POST'])
 @jwt_required
 def my_reqsets():
-	# SELECT reqsets.* FROM reqsets r JOIN user_reqs ur ON r.rs_id = ur.rs_id WHERE ur.user_id = {uid};
-	sel = db.select([reqsets]).select_from(reqsets.join(user_reqs, reqsets.c.rs_id == user_reqs.c.rs_id)).where(user_reqs.c.user_id == get_jwt_identity())
+	# SELECT r.* FROM schedulr.reqsets r JOIN schedulr.prog_reqs pr ON r.rs_id = pr.rs_id JOIN schedulr.user_progs up ON up.prog_id = pr.prog_id WHERE up.user_id = {uid}
+	sel = db.select([reqsets]).select_from(reqsets.join(proj_reqs.join(user_progs, prog_reqs.prog_id == user_progs.prog_id), reqsets.c.rs_id == proj_reqs.c.rs_id)).where(user_projs.c.user_id == get_jwt_identity())
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 
@@ -240,7 +240,7 @@ def my_reqsets():
 @jwt_required
 def my_needed():
 	# Get IDs for all of the reqsets the user has added.
-	sel = db.select([reqsets.c.rs_id]).select_from(reqsets.join(user_reqs, reqsets.c.rs_id == user_reqs.c.rs_id)).where(user_reqs.c.user_id == get_jwt_identity())
+	sel = db.select([reqsets.c.rs_id]).select_from(reqsets.join(proj_reqs.join(user_progs, prog_reqs.prog_id == user_progs.prog_id), reqsets.c.rs_id == proj_reqs.c.rs_id)).where(user_projs.c.user_id == get_jwt_identity())
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	rsids = [row['rs_id'] for row in db_out]
@@ -353,8 +353,7 @@ def add_taken():
 	}, 200
 
 #####
-# Add a program to the user account. In practice, this just adds all of the reqsets associated with the program to
-# the account, there is no internal record that the user added the entire program vs. individual reqsets.
+# Add a program to the user account.
 @app.route("/add_program", methods=['POST'])
 @jwt_required
 def add_program():
@@ -365,35 +364,7 @@ def add_program():
 	if not pid:
 		return { "error": "no prog_id" }, 400
 
-	# Select all of the reqsets for the given program.
-	sel = db.select([prog_reqs]).where(prog_reqs.c.prog_id == pid)
-	res = connection.execute(sel)
-	db_out = res.fetchall()
-
-	# For each of the reqsets in the program, attempt to add it to the user account, ignoring any possible duplicates.
-	rids = [(dict(row.items())) for row in db_out]
-	for rs in rids:
-		query = user_reqs.insert().values(user_id=get_jwt_identity(), rs_id=rs['rs_id']).prefix_with('IGNORE')
-		ResultProxy = connection.execute(query)
-
-	return {
-		"success": True
-	}, 200
-
-#####
-# Add an individual requirements set to the user account.
-@app.route("/add_reqset", methods=['POST'])
-@jwt_required
-def add_reqset():
-	if not request.is_json:
-		return { "error": "invalid JSON" }, 400
-
-	rsid = request.json.get('rs_id')
-	if not rsid:
-		return { "error": "no rs_id" }, 400
-
-	# Attempt to add the given reqset to the account, ignoring any possible duplicates.
-	query = user_reqs.insert().values(user_id=get_jwt_identity(), rs_id=rsid).prefix_with('IGNORE')
+	query = user_progs.insert().values(user_id=get_jwt_identity(), proj_id=rs['proj_id']).prefix_with('IGNORE')
 	res = connection.execute(query)
 
 	return {
@@ -433,17 +404,17 @@ def drop_taken():
 
 #####
 # Removes a requirements set from the user account.
-@app.route("/drop_reqset", methods=['POST'])
+@app.route("/drop_program", methods=['POST'])
 @jwt_required
 def drop_reqset():
 	if not request.is_json:
 		return { "error": "invalid JSON" }, 400
 
-	rsid = request.json.get('rs_id')
-	if not rsid:
-		return { "error": "no rs_id" }, 400
+	progid = request.json.get('prog_id')
+	if not progid:
+		return { "error": "no prog_id" }, 400
 
-	sel = user_reqs.delete().where(db.and_(user_reqs.c.user_id == get_jwt_identity(), user_reqs.c.rs_id == rsid))
+	sel = user_progs.delete().where(db.and_(user_progs.c.user_id == get_jwt_identity(), user_progs.c.prog_id == progid))
 	res = connection.execute(sel)
 
 	return {
