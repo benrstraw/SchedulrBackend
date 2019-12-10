@@ -7,6 +7,7 @@ import json
 import bcrypt
 from email_validator import validate_email, EmailNotValidError
 import toposort as ts
+import random
 
 app = Flask(__name__)
 app.config.from_object(schedulr_config.Config)
@@ -27,77 +28,143 @@ user_taken = db.Table('user_taken', metadata, autoload=True, autoload_with=engin
 # Valid semesters and statuses for course attempts.
 semesters = ['FALL', 'SPRING', 'SUMMER']
 statuses = ['COMPLETE', 'INPROGRESS', 'PLANNED']
+grades = ['A', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F']
+PASS_THRESHOLD = 7 # the MySQL enum value for 'C' is 7
 
 # The course grades which are considered passing.
 passing = ['C', 'C+', 'B-', 'B', 'B+', 'A-', 'A', 'A+']
 
 #####
-# A recursive function which obtains the prerequisites for a course, then calls itself on those prerequisites as well.
-# This builds a directed graph of every course that the user will have to take to complete their requirements sets.
-# The paramaters are a course_id, the dependency graph, and a list of the courses the user has passed. Returns nothing.
-def get_nested_prereqs(cid, dep_graph, userpass):
-	# Very important: many classes share the same prereqs, so we go down the same call tree multiple times.
-	# Solution: if the course is also in the graph, skip it. This skips not only the course call, but also the call for all it's prereqs.
-	# This is fine because if the course has already been called once, we've already processed all it's prereqs as well.
-	# ALSO, we do not want to add classes that have already been passed, this will create incorrect semester plans.
-	if cid in dep_graph or cid in userpass:
-		return
-
-	# Retrieve from the DB the list of course IDs for the *prerequisites* for the input course ID.
-	sel = db.select([courses.c.course_id]).select_from(courses.join(course_reqs, courses.c.course_id == course_reqs.c.prereq_id)).where(course_reqs.c.course_id == cid)
-	res = connection.execute(sel)
-	db_out = res.fetchall()
-
-	# For the input course ID key in the dep_graph dictionary, add the set of prerequisite course IDs as the value.
-	# If the class has already been passsed, it's no longer a required prerequisite and is dropped.
-	dep_graph[cid] = {row['course_id'] for row in db_out if row['course_id'] not in userpass}
-
-	# Since the new prerequisites we just discovered may have their own prereqs, recursively call on the new courses.
-	for rec in dep_graph[cid]:
-		get_nested_prereqs(rec, dep_graph, userpass)
-
-#####
-# The caller function for the recursive get_nested_prereqs(), this function returns a directed dependency graph of all
-# the courses the user must take to complete their requirements sets. The input paramaters are the user_id of the user,
-# and optionally a boolean stating whether we should ignore the user's passed courses and build the entire program.
+# This function returns a directed dependency graph of all the courses the user must take to complete their requirements
+# sets. The input paramaters are the user_id of the user, and optionally a boolean stating whether we should ignore the
+# user's passed courses and build the entire program. (this functionality not yet implemented)
 def build_deps_graph(uid, ignore_passed = False):
-	# Get IDs for all of the reqsets the user has added.
-	sel = db.select([reqsets.c.rs_id]).select_from(reqsets.join(prog_reqs.join(user_progs, prog_reqs.c.prog_id == user_progs.c.prog_id), reqsets.c.rs_id == prog_reqs.c.rs_id)).where(user_progs.c.user_id == get_jwt_identity())
+	rss = build_reqsets(uid)
+
+	unsats = []
+	for k, v in rss.items():
+		if not v['satisfied']:
+			unsats += v['remaining']
+
+	unsat_ids = []
+	for us in unsats:
+		unsat_ids += [us['course_id']]
+
+	# Retrieve the course IDs for all the courses the user has passed.
+	sel = db.select([courses.c.course_id]).select_from(courses.join(user_taken, courses.c.course_id == user_taken.c.course_id)).where(db.and_(user_taken.c.user_id == uid, user_taken.c.grade <= PASS_THRESHOLD))
 	res = connection.execute(sel)
 	db_out = res.fetchall()
-	rsids = [row['rs_id'] for row in db_out]
-
-	# Retrieve the course IDs for all of the reqset requirements for the reqsets acquired in the previous step.
-	sel = db.select([courses.c.course_id]).select_from(courses.join(rs_reqs, courses.c.course_id == rs_reqs.c.course_id)).where(rs_reqs.c.rs_id.in_(rsids))
-	res = connection.execute(sel)
-	db_out = res.fetchall()
-	needed_courses = list(dict.fromkeys([row['course_id'] for row in db_out]))
-
-	# Retrieve the course IDs, grades, and statuses for all the courses the user has taken.
-	sel = db.select([courses.c.course_id, user_taken.c.grade, user_taken.c.status]).select_from(courses.join(user_taken, courses.c.course_id == user_taken.c.course_id)).where(user_taken.c.user_id == uid)
-	res = connection.execute(sel)
-	db_out = res.fetchall()
-
-	res.close() # Close the DB connection, we're done with it!
-
-	# Compare the taken courses against the pass requirements, and remove passed course IDs from the list of required course IDs.
-	usertake = [(dict(row.items())) for row in db_out]
-	userpass = []
-	for t in usertake:
-		if t['status'] == 'COMPLETE' and t['grade'] in passing:
-			userpass += [t['course_id']]
+	userpass = [(row.values()[0]) for row in db_out]
 
 	# Create an empty dictionary to hold the dependency graph.
 	dep_graph = dict()
 
-	# For each of the courses in the reqset, call the recursive function to find it's prereqs all the way to the bottom.
-	for nc in needed_courses:
-		if ignore_passed:
-			get_nested_prereqs(nc, dep_graph, [])
-		else:
-			get_nested_prereqs(nc, dep_graph, userpass)
+	# Retrieve from the DB the list of course IDs for the *prerequisites* for the input course IDs.
+	sel = db.select([course_reqs]).where(course_reqs.c.course_id.in_(unsat_ids)).order_by(course_reqs.c.course_id.asc())
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+	prs = [(dict(row.items())) for row in db_out]
+
+	res.close() # Close the DB connection, we're done with it!
+
+	orgs = {} # Dictionary for completed orgroups.
+	for pr in prs:
+		if pr['course_id'] not in dep_graph: dep_graph[pr['course_id']] = set()
+
+		if pr['orgroup']:
+			if pr['course_id'] not in orgs:
+				orgs[pr['course_id']] = {
+					pr['orgroup']: {
+						'courses': [],
+						'satisfied': False
+					}
+				}
+
+			orgs[pr['course_id']][pr['orgroup']]['courses'] += [pr['prereq_id']]
+
+		if pr['prereq_id'] in userpass:
+			if pr['orgroup']:
+				orgs[pr['course_id']][pr['orgroup']]['satisfied'] = True
+			
+			continue
+
+		if not pr['orgroup']:
+			dep_graph[pr['course_id']].add(pr['prereq_id'])
+
+	# Iterate over all the items in the or_groups. k is the course and v holds all the prereq info.
+	for k, v in orgs.items():
+		# Iterate over the possible multiple or_groups for a single course. l is the orgroup and w holds 'courses' and 'satisfied'.
+		for l, w in v.items():
+			if not w['satisfied']:
+				print(f"{k}'s orgroup {l} is unsatisfied by userpass courses, resolving...")
+				sat_course = []
+
+				# Look for any of the courses 
+				for c in w['courses']:
+					if c in unsat_ids:
+						sat_course += [c]
+
+				if sat_course:
+					rando = random.choice(sat_course)
+					dep_graph[k].add(rando)
+					print(f"{rando} has been found among the unsat courses, picking that for the OR prereq!")
+				else:
+					rando = random.choice(w['courses'])
+					dep_graph[k].add(rando)
+					print(f"There were no prereqs in common with the unsats, so we randomly chose {rando}. (suboptimal)")
 
 	return dep_graph
+
+def build_reqsets(uid):
+	query = db.select([reqsets, courses.c.course_id, courses.c.code, courses.c.name.label('course_name'), courses.c.hours, user_taken.c.semester, user_taken.c.year, user_taken.c.status, user_taken.c.grade]).select_from(
+		rs_reqs.join(user_taken, db.and_(user_taken.c.course_id == rs_reqs.c.course_id, user_taken.c.user_id == uid), isouter=True)
+	 	.join(reqsets, reqsets.c.rs_id == rs_reqs.c.rs_id)
+	 	.join(courses, courses.c.course_id == rs_reqs.c.course_id)
+		).where(rs_reqs.c.rs_id.in_(
+			db.select([prog_reqs.c.rs_id]).select_from(
+				prog_reqs.join(user_progs, db.and_(user_progs.c.prog_id == prog_reqs.c.prog_id, user_progs.c.user_id == uid)))
+			))
+	res = connection.execute(query)
+	db_out = res.fetchall()	
+	rows = [(dict(row.items())) for row in db_out]
+	res.close()
+	
+	rss = dict()
+	for row in rows:
+		if row['rs_id'] not in rss:
+			rss[row['rs_id']] = {
+				'name': row['name'],
+				'catalog': row['catalog'],
+				'hours_required': row['optionals'],
+				'satisfied': False,
+				'passed': [],
+				'remaining': []
+			}
+
+		if row['grade'] in passing:
+			rss[row['rs_id']]['passed'] += [{
+				'course_id': row['course_id'],
+				'course_code': row['code'],
+				'course_name': row['course_name'],
+				'hours': row['hours'],
+				'semester': row['semester'],
+				'year': row['year'],
+				'status': row['status'],
+				'grade': row['grade']
+			}]
+		else:
+			rss[row['rs_id']]['remaining'] += [{
+				'course_id': row['course_id'],
+				'course_code': row['code'],
+				'course_name': row['course_name'],
+				'hours': row['hours']
+			}]
+
+	for k,v in rss.items():
+		if v['hours_required'] and sum(c['hours'] for c in v['passed']) >= v['hours_required'] or len(v['remaining']) == 0:
+			v['satisfied'] = True
+
+	return rss
 
 ### Auth checker
 @app.route("/auth", methods=['GET'])
@@ -221,55 +288,7 @@ def my_taken():
 @app.route("/my_reqsets", methods=['GET', 'POST'])
 @jwt_required
 def my_reqsets():
-	query = db.select([reqsets, courses.c.course_id, courses.c.code, courses.c.name.label('course_name'), courses.c.hours, user_taken.c.semester, user_taken.c.year, user_taken.c.status, user_taken.c.grade]).select_from(
-		rs_reqs.join(user_taken, db.and_(user_taken.c.course_id == rs_reqs.c.course_id, user_taken.c.user_id == get_jwt_identity()), isouter=True)
-	 	.join(reqsets, reqsets.c.rs_id == rs_reqs.c.rs_id)
-	 	.join(courses, courses.c.course_id == rs_reqs.c.course_id)
-		).where(rs_reqs.c.rs_id.in_(
-			db.select([prog_reqs.c.rs_id]).select_from(
-				prog_reqs.join(user_progs, db.and_(user_progs.c.prog_id == prog_reqs.c.prog_id, user_progs.c.user_id == get_jwt_identity())))
-			))
-	res = connection.execute(query)
-	db_out = res.fetchall()	
-	rows = [(dict(row.items())) for row in db_out]
-	res.close()
-	
-	rss = dict()
-	for row in rows:
-		if row['rs_id'] not in rss:
-			rss[row['rs_id']] = {
-				'name': row['name'],
-				'catalog': row['catalog'],
-				'hours_required': row['optionals'],
-				'satisfied': False,
-				'passed': [],
-				'remaining': []
-			}
-
-		if row['grade'] in passing:
-			rss[row['rs_id']]['passed'] += [{
-				'course_id': row['course_id'],
-				'course_code': row['code'],
-				'course_name': row['course_name'],
-				'hours': row['hours'],
-				'semester': row['semester'],
-				'year': row['year'],
-				'status': row['status'],
-				'grade': row['grade']
-			}]
-		else:
-			rss[row['rs_id']]['remaining'] += [{
-				'course_id': row['course_id'],
-				'course_code': row['code'],
-				'course_name': row['course_name'],
-				'hours': row['hours']
-			}]
-
-	for k,v in rss.items():
-		if v['hours_required'] and sum(c['hours'] for c in v['passed']) >= v['hours_required'] or len(v['remaining']) == 0:
-			v['satisfied'] = True
-
-	return jsonify(list(rss.values())), 200
+	return jsonify(list(build_reqsets(get_jwt_identity()).values())), 200
 
 #####
 # Route which returns information about all of the requirements sets a user has added to their account.
@@ -311,15 +330,18 @@ def gen_schedule():
 	toposorted = ts.toposort(dep_graph, max_classes)
 	course_groups = [list(row) for row in toposorted]
 
+	flat_courses = [item for sublist in course_groups for item in sublist]
+
+	# Retrieve all of the required courses from the DB given the list of required course IDs.
+	sel = db.select([courses]).where(courses.c.course_id.in_(flat_courses))
+	res = connection.execute(sel)
+	db_out = res.fetchall()
+	res.close()
+	cinfo = [(dict(row.items())) for row in db_out]
+
 	output = []
 	for cg in course_groups:
-		# Retrieve all of the required courses from the DB given the list of required course IDs.
-		sel = db.select([courses]).where(courses.c.course_id.in_(cg))
-		res = connection.execute(sel)
-		db_out = res.fetchall()
-
-		# Add to the output all of the returned courses for this semester inside their own list (a semester).
-		output += [[(dict(row.items())) for row in db_out]]
+		output += [[ci for ci in cinfo if ci['course_id'] in cg]]
 
 	return jsonify(output), 200
 
@@ -354,11 +376,13 @@ def add_taken():
 	if semester not in semesters:
 		return { "error": "invalid semester (must be in ['FALL', 'SPRING', 'SUMMER'])" }, 400
 	if status not in statuses:
-		return { "error": "invalid semester (must be in ['COMPLETE', 'INPROGRESS', 'PLANNED'])" }, 400
+		return { "error": "invalid status (must be in ['COMPLETE', 'INPROGRESS', 'PLANNED'])" }, 400
+	if grade and grade not in grades:
+		return { "error": "invalid grade (must be in ['A', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F'])" }, 400
 
 	# Insert the user supplied values into the table, overwriting the non-PK values (grade and status) on duplicate.
 	query = insert(user_taken).values(user_id=get_jwt_identity(), course_id=cid, semester=semester, year=year, grade=grade, status=status).on_duplicate_key_update(grade=grade, status=status)
-	ResultProxy = connection.execute(query)
+	res = connection.execute(query)
 
 	return {
 		"success": True
