@@ -99,6 +99,14 @@ def build_deps_graph(uid, ignore_passed = False):
 
 	return dep_graph
 
+### Auth checker
+@app.route("/auth", methods=['GET'])
+@jwt_required
+def auth():
+	return {
+		"user_id": get_jwt_identity()
+	}, 200
+
 #####
 # Simple SELECT * FROM courses route.
 @app.route("/list_courses", methods=['GET'])
