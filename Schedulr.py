@@ -221,26 +221,55 @@ def my_taken():
 @app.route("/my_reqsets", methods=['GET', 'POST'])
 @jwt_required
 def my_reqsets():
-	# SELECT r.* FROM schedulr.reqsets r JOIN schedulr.prog_reqs pr ON r.rs_id = pr.rs_id JOIN schedulr.user_progs up ON up.prog_id = pr.prog_id WHERE up.user_id = {uid}
-	sel = db.select([reqsets]).select_from(reqsets.join(prog_reqs.join(user_progs, prog_reqs.c.prog_id == user_progs.c.prog_id), reqsets.c.rs_id == prog_reqs.c.rs_id)).where(user_progs.c.user_id == get_jwt_identity())
-	res = connection.execute(sel)
-	db_out = res.fetchall()
-
-	userreqsets = [(dict(row.items())) for row in db_out]
-
-	###
-	# This used to return all of the courses contained within each reqset, but this was deemed too unweildy.
-	# It's possible this functionality may be returned in a future API version at request of the front-end team.
-
-	# for u in userreqsets:
-	# 	sel = db.select([courses]).select_from(courses.join(rs_reqs, courses.c.course_id == rs_reqs.c.course_id)).where(rs_reqs.c.rs_id == u['rs_id'])
-	# 	res = connection.execute(sel)
-	# 	db_out = res.fetchall()
-	# 	u['courses'] = [(dict(row.items())) for row in db_out]
-
+	query = db.select([reqsets, courses.c.course_id, courses.c.code, courses.c.name.label('course_name'), courses.c.hours, user_taken.c.semester, user_taken.c.year, user_taken.c.status, user_taken.c.grade]).select_from(
+		rs_reqs.join(user_taken, db.and_(user_taken.c.course_id == rs_reqs.c.course_id, user_taken.c.user_id == get_jwt_identity()), isouter=True)
+	 	.join(reqsets, reqsets.c.rs_id == rs_reqs.c.rs_id)
+	 	.join(courses, courses.c.course_id == rs_reqs.c.course_id)
+		).where(rs_reqs.c.rs_id.in_(
+			db.select([prog_reqs.c.rs_id]).select_from(
+				prog_reqs.join(user_progs, db.and_(user_progs.c.prog_id == prog_reqs.c.prog_id, user_progs.c.user_id == get_jwt_identity())))
+			))
+	res = connection.execute(query)
+	db_out = res.fetchall()	
+	rows = [(dict(row.items())) for row in db_out]
 	res.close()
+	
+	rss = dict()
+	for row in rows:
+		if row['rs_id'] not in rss:
+			rss[row['rs_id']] = {
+				'name': row['name'],
+				'catalog': row['catalog'],
+				'hours_required': row['optionals'],
+				'satisfied': False,
+				'passed': [],
+				'remaining': []
+			}
 
-	return jsonify(userreqsets), 200
+		if row['grade'] in passing:
+			rss[row['rs_id']]['passed'] += [{
+				'course_id': row['course_id'],
+				'course_code': row['code'],
+				'course_name': row['course_name'],
+				'hours': row['hours'],
+				'semester': row['semester'],
+				'year': row['year'],
+				'status': row['status'],
+				'grade': row['grade']
+			}]
+		else:
+			rss[row['rs_id']]['remaining'] += [{
+				'course_id': row['course_id'],
+				'course_code': row['code'],
+				'course_name': row['course_name'],
+				'hours': row['hours']
+			}]
+
+	for k,v in rss.items():
+		if v['hours_required'] and sum(c['hours'] for c in v['passed']) >= v['hours_required'] or len(v['remaining']) == 0:
+			v['satisfied'] = True
+
+	return jsonify(list(rss.values())), 200
 
 #####
 # Route which returns information about all of the requirements sets a user has added to their account.
@@ -257,47 +286,6 @@ def my_programs():
 	res.close()
 
 	return jsonify(userprogs), 200
-
-#####
-# Retrieve a list of all the courses the user must still pass to complete their requirements sets.
-@app.route("/my_needed", methods=['GET', 'POST'])
-@jwt_required
-def my_needed():
-	# Get IDs for all of the reqsets the user has added.
-	sel = db.select([reqsets]).select_from(reqsets.join(prog_reqs.join(user_progs, prog_reqs.c.prog_id == user_progs.c.prog_id), reqsets.c.rs_id == prog_reqs.c.rs_id)).where(user_progs.c.user_id == get_jwt_identity())
-	res = connection.execute(sel)
-	db_out = res.fetchall()
-	rss = [dict(row.items()) for row in db_out]
-
-	# Retrieve the course IDs for all of the reqset requirements for the reqsets acquired in the previous step.
-	sel = db.select([courses.c.course_id]).select_from(courses.join(rs_reqs, courses.c.course_id == rs_reqs.c.course_id)).where(rs_reqs.c.rs_id.in_([rs['rs_id'] for rs in rss]))
-	res = connection.execute(sel)
-	db_out = res.fetchall()
-	needed_courses = list(dict.fromkeys([row['course_id'] for row in db_out]))
-
-	# Retrieve the course IDs, grades, and statuses for all the courses the user has taken.
-	sel = db.select([courses.c.course_id, user_taken.c.grade, user_taken.c.status]).select_from(courses.join(user_taken, courses.c.course_id == user_taken.c.course_id)).where(user_taken.c.user_id == get_jwt_identity())
-	res = connection.execute(sel)
-	db_out = res.fetchall()
-
-	# Compare the taken courses against the pass requirements, and remove passed course IDs from the list of required course IDs.
-	userpassed = [(dict(row.items())) for row in db_out]
-	for t in userpassed:
-		if t['status'] == 'COMPLETE' and t['grade'] in passing:
-			try:
-				needed_courses.remove(t['course_id'])
-			except ValueError as e:
-				pass
-
-	# Retrieve all of the required courses from the DB given the list of required course IDs.
-	sel = db.select([courses]).where(courses.c.course_id.in_(needed_courses))
-	res = connection.execute(sel)
-	db_out = res.fetchall()	
-	needed_courses = [(dict(row.items())) for row in db_out]
-
-	res.close()
-
-	return jsonify(needed_courses), 200
 
 #####
 # Generate a a list of lists of dictionaries, representing courses in a semester. The outer list acts as an ordered
