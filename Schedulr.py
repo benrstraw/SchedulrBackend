@@ -34,6 +34,11 @@ PASS_THRESHOLD = 7 # the MySQL enum value for 'C' is 7
 # The course grades which are considered passing.
 passing = ['C', 'C+', 'B-', 'B', 'B+', 'A-', 'A']
 
+@app.before_request
+def log_request():
+    print(f"\n{request.headers}")
+    return None
+
 #####
 # This function returns a directed dependency graph of all the courses the user must take to complete their requirements
 # sets. The input paramaters are the user_id of the user, and optionally a boolean stating whether we should ignore the
@@ -102,8 +107,6 @@ def build_deps_graph(uid, ignore_passed = False):
 			
 			if not pr['prereq_id']: continue
 
-			if pr['prereq_id'] not in dep_graph: dep_graph[pr['prereq_id']] = set()
-
 			if pr['orgroup']:
 				if pr['course_id'] not in orgs:
 					orgs[pr['course_id']] = {
@@ -123,6 +126,7 @@ def build_deps_graph(uid, ignore_passed = False):
 
 			if not pr['orgroup']:
 				dep_graph[pr['course_id']].add(pr['prereq_id'])
+				if pr['prereq_id'] not in dep_graph: dep_graph[pr['prereq_id']] = set()
 
 		# Iterate over all the items in the or_groups. k is the course and v holds all the prereq info.
 		for k, v in orgs.items():
@@ -137,10 +141,12 @@ def build_deps_graph(uid, ignore_passed = False):
 					if sat_course:
 						rando = random.choice(sat_course)
 						dep_graph[k].add(rando)
+						if rando not in dep_graph: dep_graph[rando] = set()
 						print(f"{rando} has been found among the unsat courses, picking that for {k}'s OR prereq!")
 					else:
 						rando = random.choice(w['courses'])
 						dep_graph[k].add(rando)
+						if rando not in dep_graph: dep_graph[rando] = set()
 						print(f"There were no prereqs in common with the unsats, so we randomly chose {rando} for {k}'s OR prereq.")
 
 		all_bases = list(dep_graph.keys())
@@ -158,6 +164,15 @@ def build_deps_graph(uid, ignore_passed = False):
 			break
 
 		print("Not all prereqs resolved, iterating again...")
+
+	print(f"Old DG keys: {dep_graph.keys()}")
+	dep_graph = {k:v for k,v in dep_graph.items() if k not in userpass}
+	print(f"New DG keys: {dep_graph.keys()}")
+	for prs in dep_graph.values():
+		untakens = prs - set(userpass)
+		if len(prs) != len(untakens):
+			print(f"Removing taken: {prs} -> {untakens}")
+		prs = untakens
 
 	print(f"Final dependency graph: {dep_graph}")
 
@@ -231,6 +246,7 @@ def list_courses():
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	res.close()
+	print(f"All courses listed: {[(dict(row.items())) for row in db_out]}")
 	return jsonify([(dict(row.items())) for row in db_out]), 200
 
 #####
@@ -242,6 +258,7 @@ def list_programs():
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	res.close()
+	print(f"All programs listed: {[(dict(row.items())) for row in db_out]}")
 	return jsonify([(dict(row.items())) for row in db_out]), 200
 
 #####
@@ -253,6 +270,7 @@ def list_reqsets():
 	res = connection.execute(sel)
 	db_out = res.fetchall()
 	res.close()
+	print(f"All reqsets listed: {[(dict(row.items())) for row in db_out]}")
 	return jsonify([(dict(row.items())) for row in db_out]), 200
 
 #####
@@ -283,6 +301,8 @@ def get_course():
 	course_info['prereqs'] = [(dict(row.items())) for row in db_out]
 
 	res.close()
+
+	print(f"Returned course: {course_info}")
 
 	return course_info, 200
 
@@ -315,6 +335,8 @@ def get_reqset():
 
 	res.close()
 
+	print(f"Returned reqset: {reqset}")
+
 	return reqset, 200
 
 #####
@@ -329,6 +351,8 @@ def my_taken():
 	db_out = res.fetchall()
 	res.close()
 
+	print(f"My taken: {[(dict(row.items())) for row in db_out]}")
+
 	return jsonify([(dict(row.items())) for row in db_out]), 200
 
 #####
@@ -336,6 +360,7 @@ def my_taken():
 @app.route("/my_reqsets", methods=['GET', 'POST'])
 @jwt_required
 def my_reqsets():
+	print(f"My reqsets: {list(build_reqsets(get_jwt_identity()).values())}")
 	return jsonify(list(build_reqsets(get_jwt_identity()).values())), 200
 
 #####
@@ -351,6 +376,8 @@ def my_programs():
 	userprogs = [(dict(row.items())) for row in db_out]
 
 	res.close()
+
+	print(f"My programs: {userprogs}")
 
 	return jsonify(userprogs), 200
 
@@ -381,7 +408,11 @@ def gen_schedule():
 	toposorted = ts.toposort(dep_graph, max_classes)
 	course_groups = [list(row) for row in toposorted]
 
+	print(f"Toposorted: {list(x) for x in toposorted}")
+
 	flat_courses = [item for sublist in course_groups for item in sublist]
+
+	print(f"Flat courses: {flat_courses}")
 
 	# Retrieve all of the required courses from the DB given the list of required course IDs.
 	sel = db.select([courses]).where(courses.c.course_id.in_(flat_courses))
