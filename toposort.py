@@ -72,11 +72,15 @@ items in the preceeding sets.
     # Add empty dependences where needed.
     data.update({item:set() for item in extra_items_in_deps})
     while True:
-        ordered = set(item for item, dep in data.items() if len(dep) == 0)
+        ordered = list(item for item, dep in data.items() if len(dep) == 0)
         if not ordered:
             break
-        while len(ordered) > maxsize:
-            ordered.pop()
+        # while len(ordered) > maxsize:
+            # ordered.pop()
+        ordered = set(ordered[:maxsize])
+
+        # print(f"Data: {data}")
+        # print(f"Ordered: {ordered}")
         yield ordered
         data = {item: (dep - ordered)
                 for item, dep in data.items()
