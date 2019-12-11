@@ -4,3 +4,4 @@
 !toposort.py
 !dump-schedulr-catalog.sql
 !dump-schedulr-structure.sql
+!dump-schedulr-demo.sql
