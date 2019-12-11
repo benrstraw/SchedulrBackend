@@ -12,7 +12,7 @@ import random
 app = Flask(__name__)
 app.config.from_object(schedulr_config.Config)
 jwt = JWTManager(app)
-engine = db.create_engine(schedulr_config.Config.DATABASE_URI)
+engine = db.create_engine(schedulr_config.Config.DATABASE_URI, isolation_level='READ UNCOMMITTED')
 connection = engine.connect()
 metadata = db.MetaData()
 courses = db.Table('courses', metadata, autoload=True, autoload_with=engine)
@@ -44,10 +44,13 @@ def build_deps_graph(uid, ignore_passed = False):
 	unsats = []
 	for k, v in rss.items():
 		if not v['satisfied']:
-			unsats += v['remaining']
+			print(v)
+			if not v['hours_required']:
+				unsats += v['remaining']
 
 	unsat_ids = []
 	for us in unsats:
+		# print(us)
 		unsat_ids += [us['course_id']]
 
 	# Retrieve the course IDs for all the courses the user has passed.
@@ -112,6 +115,8 @@ def build_deps_graph(uid, ignore_passed = False):
 					rando = random.choice(w['courses'])
 					dep_graph[k].add(rando)
 					print(f"There were no prereqs in common with the unsats, so we randomly chose {rando}. (suboptimal)")
+
+	print(dep_graph)
 
 	return dep_graph
 
