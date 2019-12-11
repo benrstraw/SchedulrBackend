@@ -41,17 +41,40 @@ passing = ['C', 'C+', 'B-', 'B', 'B+', 'A-', 'A']
 def build_deps_graph(uid, ignore_passed = False):
 	rss = build_reqsets(uid)
 
-	unsats = []
+	unsat_ids = []
+	all_ids = []
+	multiunsats = {}
 	for k, v in rss.items():
 		if not v['satisfied']:
-			print(v)
-			if not v['hours_required']:
-				unsats += v['remaining']
+			for rem in v['remaining']:
+				all_ids += [rem['course_id']]
+				if not v['hours_required']:
+					unsat_ids += [rem['course_id']]
+				else:
+					multiunsats[k] = v
 
-	unsat_ids = []
-	for us in unsats:
-		# print(us)
-		unsat_ids += [us['course_id']]
+	unsat_ids = list(set(unsat_ids))
+	all_ids = list(set(all_ids))
+
+	print(f"Unsats prior to multiunsats: {unsat_ids}")
+	
+	for musk, mus in multiunsats.items():
+		selected_courses = []
+		for musrem in mus['remaining']:
+			if musrem['course_id'] in unsat_ids:
+				selected_courses += [musrem]
+			if sum([sc['hours'] for sc in selected_courses]) >= mus['hours_required']:
+				break
+		mus['remaining'] = [x for x in mus['remaining'] if x not in selected_courses]
+		for musrem in mus['remaining']:
+			selected_courses += [musrem]
+			if sum([sc['hours'] for sc in selected_courses]) >= mus['hours_required']:
+				break
+
+		unsat_ids += [x['course_id'] for x in selected_courses]
+
+	unsat_ids = list(set(unsat_ids))
+	print(f"Unsats after multiunsats: {unsat_ids}")
 
 	# Retrieve the course IDs for all the courses the user has passed.
 	sel = db.select([courses.c.course_id]).select_from(courses.join(user_taken, courses.c.course_id == user_taken.c.course_id)).where(db.and_(user_taken.c.user_id == uid, user_taken.c.grade <= PASS_THRESHOLD))
@@ -61,62 +84,82 @@ def build_deps_graph(uid, ignore_passed = False):
 
 	# Create an empty dictionary to hold the dependency graph.
 	dep_graph = dict()
+	new_courses = []
+	known_courses = unsat_ids
+	while True:
+		# Retrieve from the DB the list of course IDs for the *prerequisites* for the input course IDs.
+		sel = db.select([courses.c.course_id, course_reqs.c.prereq_id, course_reqs.c.orgroup]).select_from(
+			courses.join(course_reqs, course_reqs.c.course_id == courses.c.course_id, isouter=True)).where(courses.c.course_id.in_(unsat_ids)).order_by(courses.c.course_id.asc())
+		res = connection.execute(sel)
+		db_out = res.fetchall()
+		prs = [(dict(row.items())) for row in db_out]
 
-	# Retrieve from the DB the list of course IDs for the *prerequisites* for the input course IDs.
-	sel = db.select([course_reqs]).where(course_reqs.c.course_id.in_(unsat_ids)).order_by(course_reqs.c.course_id.asc())
-	res = connection.execute(sel)
-	db_out = res.fetchall()
-	prs = [(dict(row.items())) for row in db_out]
+		res.close() # Close the DB connection, we're done with it!
 
-	res.close() # Close the DB connection, we're done with it!
-
-	orgs = {} # Dictionary for completed orgroups.
-	for pr in prs:
-		if pr['course_id'] not in dep_graph: dep_graph[pr['course_id']] = set()
-
-		if pr['orgroup']:
-			if pr['course_id'] not in orgs:
-				orgs[pr['course_id']] = {
-					pr['orgroup']: {
-						'courses': [],
-						'satisfied': False
-					}
-				}
-
-			orgs[pr['course_id']][pr['orgroup']]['courses'] += [pr['prereq_id']]
-
-		if pr['prereq_id'] in userpass:
-			if pr['orgroup']:
-				orgs[pr['course_id']][pr['orgroup']]['satisfied'] = True
+		orgs = {} # Dictionary for completed orgroups.
+		for pr in prs:
+			if pr['course_id'] not in dep_graph: dep_graph[pr['course_id']] = set()
 			
-			continue
+			if not pr['prereq_id']: continue
 
-		if not pr['orgroup']:
-			dep_graph[pr['course_id']].add(pr['prereq_id'])
+			if pr['prereq_id'] not in dep_graph: dep_graph[pr['prereq_id']] = set()
 
-	# Iterate over all the items in the or_groups. k is the course and v holds all the prereq info.
-	for k, v in orgs.items():
-		# Iterate over the possible multiple or_groups for a single course. l is the orgroup and w holds 'courses' and 'satisfied'.
-		for l, w in v.items():
-			if not w['satisfied']:
-				print(f"{k}'s orgroup {l} is unsatisfied by userpass courses, resolving...")
-				sat_course = []
+			if pr['orgroup']:
+				if pr['course_id'] not in orgs:
+					orgs[pr['course_id']] = {
+						pr['orgroup']: {
+							'courses': [],
+							'satisfied': False
+						}
+					}
 
-				# Look for any of the courses 
-				for c in w['courses']:
-					if c in unsat_ids:
-						sat_course += [c]
+				orgs[pr['course_id']][pr['orgroup']]['courses'] += [pr['prereq_id']]
 
-				if sat_course:
-					rando = random.choice(sat_course)
-					dep_graph[k].add(rando)
-					print(f"{rando} has been found among the unsat courses, picking that for the OR prereq!")
-				else:
-					rando = random.choice(w['courses'])
-					dep_graph[k].add(rando)
-					print(f"There were no prereqs in common with the unsats, so we randomly chose {rando}. (suboptimal)")
+			if pr['prereq_id'] in userpass:
+				if pr['orgroup']:
+					orgs[pr['course_id']][pr['orgroup']]['satisfied'] = True
+				
+				continue
 
-	print(dep_graph)
+			if not pr['orgroup']:
+				dep_graph[pr['course_id']].add(pr['prereq_id'])
+
+		# Iterate over all the items in the or_groups. k is the course and v holds all the prereq info.
+		for k, v in orgs.items():
+			# Iterate over the possible multiple or_groups for a single course. l is the orgroup and w holds 'courses' and 'satisfied'.
+			for l, w in v.items():
+				if not w['satisfied']:
+					sat_course = []
+					for c in w['courses']:
+						if c in unsat_ids:
+							sat_course += [c]
+
+					if sat_course:
+						rando = random.choice(sat_course)
+						dep_graph[k].add(rando)
+						print(f"{rando} has been found among the unsat courses, picking that for {k}'s OR prereq!")
+					else:
+						rando = random.choice(w['courses'])
+						dep_graph[k].add(rando)
+						print(f"There were no prereqs in common with the unsats, so we randomly chose {rando} for {k}'s OR prereq.")
+
+		all_bases = list(dep_graph.keys())
+		print(f"Bases: {all_bases}")
+
+		new_bases = [x for x in all_bases if x not in known_courses]
+		known_courses += new_bases
+		print(f"New courses: {new_bases}")
+
+		unsat_ids = new_bases
+		# unsat_ids += all_bases
+		# unsat_ids = list(set(unsat_ids))
+
+		if len(new_bases) == 0:
+			break
+
+		print("Not all prereqs resolved, iterating again...")
+
+	print(f"Final dependency graph: {dep_graph}")
 
 	return dep_graph
 
@@ -329,6 +372,7 @@ def gen_schedule():
 		if isinstance(request.json.get('max_classes'), int):
 			pass
 		max_classes = request.json.get('max_classes')
+		if not max_classes: max_classes = 4
 
 	# Build a dependency graph of all the courses the user must still take.
 	dep_graph = build_deps_graph(get_jwt_identity())
